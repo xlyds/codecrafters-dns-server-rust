@@ -1,35 +1,5 @@
-
-use bytes::{Bytes, BytesMut, BufMut, Buf};
-use crate::dns::byte_order::ByteOrder;
-
-
-#[derive(Copy, Clone, Debug)]
-pub enum Field {
-	_16Bit(u16, usize),
-	_8Bit(u8, usize)
-}
-
-pub struct FieldIter {
-	fields: Vec<Field>,
-	idx: usize
-}
-
-impl Iterator for FieldIter {
-	type Item = Field;
-
-	fn next(&mut self) -> Option<Self::Item> {
-		let idx = self.idx;
-		self.idx += 1;
-
-		self.fields.get(idx).map(|f| *f )
-	}
-}
-
-impl From<Vec<Field>> for FieldIter {
-	fn from(value: Vec<Field>) -> Self {
-		FieldIter { fields: value, idx: 0 }
-	}
-}
+use bytes::{BytesMut, Buf};
+use super::field::{Field, Fields, FieldIter};
 
 /// Represents a DNS Header Section
 /// 
@@ -59,7 +29,8 @@ impl From<Vec<Field>> for FieldIter {
 /// *nscount* _Authority Record Count_: Number of records in the Authority section.
 /// 
 /// *arcount* _Additional Record Count_: Number of records int the Additional section.
-#[derive(Debug)]
+
+#[derive(Debug, PartialEq)]
 pub struct DNSHeader {
 	
 	/// *id* _packet identifier_: (16 bit)
@@ -116,90 +87,46 @@ pub struct DNSHeader {
 	pub arcount: Field
 }
 
-trait Fields {
-	fn fields(&self) -> FieldIter;
-}
-
 impl Fields for DNSHeader {
 	fn fields(&self) -> FieldIter {
 			vec![
-				self.id,
-				self.qr,
-				self.opcode,
-				self.aa,
-				self.tc,
-				self.rd,
-				self.ra,
-				self.z,
-				self.rcode,
-				self.qdcount,
-				self.ancount,
-				self.nscount,
-				self.arcount
+				&self.id,
+				&self.qr,
+				&self.opcode,
+				&self.aa,
+				&self.tc,
+				&self.rd,
+				&self.ra,
+				&self.z,
+				&self.rcode,
+				&self.qdcount,
+				&self.ancount,
+				&self.nscount,
+				&self.arcount
 			].into()
 	}
 }
 
-struct BufFrame {
-	frame: u8,
-	remaining_capacity: usize
-}
-
-
-impl BufFrame {
-	fn new() -> Self {
-		BufFrame {
-			frame: 0,
-			remaining_capacity: 8
-		}
-	}
-
-	fn clear(&mut self) {
-		self.remaining_capacity = 8;
-		self.frame = 0;
-	}
-
-	fn flush(&mut self, dst: &mut BytesMut) {
-		dst.put_u8(self.frame);
-		self.clear();
-	}
-
-	fn append(&mut self, val: u8, size: usize) {
-		let shift_val = self.remaining_capacity - size;
-
-		let next_frame_val = val << shift_val; 
-		self.frame |= next_frame_val;
-		self.remaining_capacity -= size;
-	}
-	
-	fn append_then_flush(&mut self, val: u8, size: usize, dst: &mut BytesMut) {
-		self.append(val, size);
-
-		if self.remaining_capacity == 0 {
-			self.flush(dst);
+impl Default for DNSHeader {
+	fn default() -> Self {
+		DNSHeader {
+			id: Field::Word(1234),
+			qr: Field::Byte(1, 1),
+			opcode: Field::Byte(0, 4),
+			aa: Field::Byte(0, 1),
+			tc: Field::Byte(0, 1),
+			rd: Field::Byte(0, 1),
+			ra: Field::Byte(0, 1),
+			z: Field::Byte(0, 3),
+			rcode: Field::Byte(0, 4),
+			qdcount: Field::Word(1),
+			ancount: Field::Word(0),
+			nscount: Field::Word(0),
+			arcount: Field::Word(0),
 		}
 	}
 }
 
-impl ByteOrder for DNSHeader {
-	fn to_be_bytes(&self) -> Bytes {
-		let mut buf = BytesMut::with_capacity(12);
-
-		let mut buf_frame = BufFrame::new();
-		for field in self.fields() {
-			match field {
-				Field::_16Bit(val, _) => {
-					buf.extend_from_slice(&val.to_be_bytes());
-				},
-				Field::_8Bit(val, size) => {
-					buf_frame.append_then_flush(val, size, &mut buf);
-				}
-			}
-		}
-
-		buf.into()
-	}
-}
 
 impl From<&mut BytesMut> for DNSHeader {
 	fn from(buf: &mut BytesMut) -> Self {
@@ -213,24 +140,56 @@ impl From<&mut BytesMut> for DNSHeader {
 		let z = buf.get_u8();
 		let rcode = buf.get_u8();
 		let qdcount = buf.get_u16();
-		let ancount = buf.get_u16();
-		let nscount = buf.get_u16();
-		let arcount = buf.get_u16();
-		
+		let ancount = 0x00;
+		let nscount = 0x00;
+		let arcount = 0x00;
+
 		DNSHeader {
-			id: Field::_16Bit(id, 16),
-			qr: Field::_8Bit(qr, 1),
-			opcode: Field::_8Bit(opcode, 4),
-			aa: Field::_8Bit(aa, 1),
-			tc: Field::_8Bit(tc, 1),
-			rd: Field::_8Bit(rd, 1),
-			ra: Field::_8Bit(ra, 1),
-			z: Field::_8Bit(z, 3),
-			rcode: Field::_8Bit(rcode, 4),
-			qdcount: Field::_16Bit(qdcount, 16),
-			ancount: Field::_16Bit(ancount, 16),
-			nscount: Field::_16Bit(nscount, 16),
-			arcount: Field::_16Bit(arcount, 16),
+			id: Field::Word(id),
+			qr: Field::Byte(qr, 1),
+			opcode: Field::Byte(opcode, 4),
+			aa: Field::Byte(aa, 1),
+			tc: Field::Byte(tc, 1),
+			rd: Field::Byte(rd, 1),
+			ra: Field::Byte(ra, 1),
+			z: Field::Byte(z, 3),
+			rcode: Field::Byte(rcode, 4),
+			qdcount: Field::Word(qdcount),
+			ancount: Field::Word(ancount),
+			nscount: Field::Word(nscount),
+			arcount: Field::Word(arcount),
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn from_bytes_mut_works() {
+		let buf = b"\xc7B\x01 \0\x01\0\0\0\0\0\0";
+		let bytes = &mut BytesMut::from( &buf[..]);
+
+		let expect = DNSHeader {
+			id: Field::Word(51010),
+			qr: Field::Byte(1, 1),
+			opcode: Field::Byte(32, 4),
+			aa: Field::Byte(0, 1),
+			tc: Field::Byte(1, 1),
+			rd: Field::Byte(0, 1),
+			ra: Field::Byte(0, 1),
+			z: Field::Byte(0, 3),
+			rcode: Field::Byte(0, 4),
+			qdcount: Field::Word(0),
+			ancount: Field::Word(0),
+			nscount: Field::Word(0),
+			arcount: Field::Word(0)
+		};
+
+		let actual = DNSHeader::from( bytes );
+
+		assert_eq!(expect, actual);
+
 	}
 }
