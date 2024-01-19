@@ -1,22 +1,26 @@
-use bytes::{Bytes, BytesMut, BufMut};
+use bytes::BufMut;
 use super::field::{Field, Fields};
 
 /// convert to Big-Endian byte order
-pub trait ByteOrder {
-	fn to_be_bytes(&self) -> Bytes; 
+pub trait ByteOrder<'a> {
+	fn write_be_bytes(&self, dst: &'a mut [u8]) -> &'a [u8]; 
 }
 
-pub struct BufFrame {
+pub struct BufFrame<'a> {
+	dst: &'a mut [u8],
 	frame: u8,
+	frame_capacity: &'a usize,
 	remaining_capacity: usize
 }
 
 
-impl BufFrame {
-	pub fn new() -> Self {
+impl <'a> BufFrame<'a> {
+	pub fn new(dst: &'a mut [u8], frame_cap: &'a usize) -> Self {
 		BufFrame {
+			dst: dst,
 			frame: 0,
-			remaining_capacity: 8
+			frame_capacity: frame_cap,
+			remaining_capacity: *frame_cap
 		}
 	}
 
@@ -25,65 +29,69 @@ impl BufFrame {
 		self.frame = 0;
 	}
 
-	fn flush(&mut self, dst: &mut BytesMut) {
-		dst.put_u8(self.frame);
+	/// flushes the content of the frame to the underlying buffer and clears the frame.
+	fn flush(&mut self) {
+		self.dst.put_u8(self.frame);
 		self.clear();
 	}
 
-	fn append(&mut self, val: &u8, size: &usize) {
+	pub fn append(&mut self, vals: &[u8]) {
+		vals.iter().for_each(|b| self.push_be(b, self.frame_capacity));
+	}
+
+	pub fn push_be(&mut self, val: &u8, size: &usize) {
 		let shift_val = self.remaining_capacity - size;
 
 		let next_frame_val = val << shift_val; 
 		self.frame |= next_frame_val;
 		self.remaining_capacity -= size;
-	}
-	
-	pub fn append_then_flush(&mut self, val: &u8, size: &usize, dst: &mut BytesMut) {
-		self.append(val, size);
 
+		self.flush_full_frame();
+	}
+
+	pub fn flush_full_frame(&mut self) {
 		if self.remaining_capacity == 0 {
-			self.flush(dst);
+			self.flush();
 		}
 	}
+	
 }
 
-impl<V> ByteOrder for V
+impl <'a, V> ByteOrder<'a> for V
 where V: Fields {
-	fn to_be_bytes(&self) -> Bytes {
-		let mut buf = BytesMut::new();
+	fn write_be_bytes(&self, dst: &'a mut [u8]) -> &'a [u8] {
 
-		let mut buf_frame = BufFrame::new();
+		let mut buf_frame = BufFrame::new(dst, &8usize);
 		for field in self.fields() {
 			match field {
 				Field::Word(val) => {
-					buf_frame.flush(&mut buf);
-					buf.extend_from_slice(&val.to_be_bytes());
+					buf_frame.append(&val.to_be_bytes());
 				},
 				Field::Byte(val, size) => {
-					buf_frame.append_then_flush(val, size, &mut buf);
+					buf_frame.push_be(val, size);
 				},
 				Field::Label(val) => {
 					val.iter().for_each(|l| {
-						buf.put_u8(l.len() as u8);
-						buf.extend_from_slice(l.as_bytes())
+						buf_frame.push_be(&(l.len() as u8), &8usize);
+						buf_frame.append(l.as_bytes())
 					});
-					buf.put_u8(0x00); //escape
+					buf_frame.push_be(&0x00, &8usize); //escape
 				}
 			}
 		}
 
-		buf.into()
+		dst
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use nom::AsBytes;
 	use super::*;
 
 	struct MockFields {
 		byte1: Field,
 		byte2: Field,
+		nil: Field,
 		word: Field,
 		label: Field
 	}
@@ -93,6 +101,7 @@ mod tests {
 			vec![
 				&self.byte1,
 				&self.byte2,
+				&self.nil,
 				&self.word,
 				&self.label
 			].into()
@@ -105,17 +114,18 @@ mod tests {
 		let mock = MockFields {
 			byte1: Field::Byte(7, 5),
 			byte2: Field::Byte(4, 3),
+			nil: Field::Byte(0, 8),
 			word: Field::Word(512),
 			label: Field::Label(vec![String::from("google"), String::from("lol")])
 		};
 
-		let d_gram = b"\x3c\0\x02\0\x06google\x03lol\0";
-		let expect = Bytes::from(&d_gram[..]);
-
-		let actual = mock.to_be_bytes();
+		let expect = b"\x3c\0\x02\0\x06google\x03lol\0";
 		
-		println!("expecteed: {:?}", d_gram.as_bytes());
-		println!("actual: {:?}", actual.as_bytes());
+		let actual = &mut [0; 16];
+		mock.write_be_bytes(actual);
+		
+		println!("expected: {:?}", expect);
+		println!("actual: {:?}", actual);
 
 		assert_eq!(expect, actual);
 	}

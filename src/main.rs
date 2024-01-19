@@ -1,7 +1,7 @@
 mod dns;
 use std::net::UdpSocket;
 
-use bytes::{BytesMut, Buf};
+use bytes::BytesMut;
 
 use crate::dns::{header::DNSHeader, byte_order::ByteOrder, question::DNSQuestion};
 
@@ -16,24 +16,24 @@ fn main() {
 		match udp_socket.recv_from(&mut buf) {
 			Ok((size, source)) => {
 				println!("Received {} bytes from {}", size, source);
-				let mut filled_buf = BytesMut::from(&buf[..size]);
+				let mut filled_buf: BytesMut = BytesMut::from(&buf[..size]);
 				println!("Buffer {:?}", filled_buf);
 
-				let header = DNSHeader::default();
-				filled_buf.advance(12);
+				let header = DNSHeader::from(&mut filled_buf);
 				let question = DNSQuestion::from(&mut filled_buf);
 
 				println!("Header: {:?}", header);
 				println!("Question: {:?}", question);
 
-				let h_response = header.to_be_bytes();
-				let q_response = question.to_be_bytes();
+				let res_buf = &mut [0u8; 512];
 
-				println!("header response: {:?}", h_response);
-				println!("question respoinse: {:?}", q_response);
+				header.write_be_bytes(&mut res_buf[..12]);
+				question.write_be_bytes(&mut res_buf[12..]);
+
+				println!("response: {:?}", res_buf);
 				
 				udp_socket
-					.send_to(&h_response, source)
+					.send_to(res_buf, source)
 					.expect("Failed to send response");
 			}
 			Err(e) => {
